@@ -1,0 +1,299 @@
+Exploratory Data Analysis 
+# Univariate Analysis
+# Target variable distribution
+plt.figure(figsize=(10, 6))
+sns.histplot(df['premium_amount'], kde=True)
+plt.title('Distribution of Premium Amount')
+plt.show()
+
+# Bivariate Analysis
+# Numerical features vs premium amount
+plt.figure(figsize=(15, 10))
+for i, col in enumerate(num_features, 1):
+    plt.subplot(2, 3, i)
+    sns.scatterplot(x=df[col], y=df['premium_amount'])
+    plt.title(f'{col} vs Premium Amount')
+plt.tight_layout()
+plt.show()
+
+# Categorical features vs premium amount
+plt.figure(figsize=(15, 10))
+for i, col in enumerate(cat_cols, 1):
+    plt.subplot(2, 3, i)
+    sns.boxplot(x=df[col], y=df['premium_amount'])
+    plt.title(f'{col} vs Premium Amount')
+    plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+# Multivariate Analysis
+# Correlation matrix
+corr_matrix = df.select_dtypes(include=['int64', 'float64']).corr()
+plt.figure(figsize=(10, 8))
+sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0)
+plt.title('Correlation Matrix')
+plt.show()
+
+# Pairplot for selected features
+sns.pairplot(df[['age', 'bmi', 'children', 'policy_duration', 'premium_amount']])
+plt.show() 
+
+
+2. Feature Engineering 
+# Feature engineering
+# Create BMI categories
+df['bmi_category'] = pd.cut(df['bmi'], 
+                           bins=[0, 18.5, 25, 30, 100],
+                           labels=['Underweight', 'Normal', 'Overweight', 'Obese'])
+
+# Age groups
+df['age_group'] = pd.cut(df['age'],
+                        bins=[0, 30, 45, 60, 100],
+                        labels=['Young', 'Adult', 'Middle-aged', 'Senior'])
+
+# Prepare features and target
+X = df.drop('premium_amount', axis=1)
+y = df['premium_amount']
+
+# Identify categorical and numerical features
+cat_features = X.select_dtypes(include=['category', 'object']).columns.tolist()
+num_features = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
+
+# Remove date features as we've extracted duration
+if 'policy_start_date' in num_features:
+    num_features.remove('policy_start_date')
+if 'policy_start_date' in X.columns:
+    X = X.drop('policy_start_date', axis=1)
+
+# Create preprocessing pipeline
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', StandardScaler(), num_features),
+        ('cat', OneHotEncoder(handle_unknown='ignore'), cat_features)
+    ])
+
+# Feature selection
+X_processed = preprocessor.fit_transform(X)
+selector = SelectKBest(score_func=f_regression, k='all')
+selector.fit(X_processed, y)
+
+# Get feature scores
+features = (preprocessor.named_transformers_['cat'].get_feature_names_out(cat_features).tolist() + 
+            num_features)
+feature_scores = pd.DataFrame({'Feature': features, 'Score': selector.scores_})
+feature_scores = feature_scores.sort_values('Score', ascending=False)
+
+print("Feature importance scores:")
+display(feature_scores)
+
+# Plot feature importance
+plt.figure(figsize=(12, 8))
+sns.barplot(x='Score', y='Feature', data=feature_scores)
+plt.title('Feature Importance Scores')
+plt.show()
+
+3. Model Deployment 
+# Split data into train and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Define models to evaluate
+models = {
+    'Linear Regression': LinearRegression(),
+    'Random Forest': RandomForestRegressor(random_state=42),
+    'Gradient Boosting': GradientBoostingRegressor(random_state=42),
+    'XGBoost': XGBRegressor(random_state=42),
+    'SVR': SVR()
+}
+
+# Evaluate each model
+results = []
+for name, model in models.items():
+    # Create pipeline
+    pipeline = Pipeline(steps=[
+        ('preprocessor', preprocessor),
+        ('model', model)
+    ])
+    
+    # Fit the model
+    pipeline.fit(X_train, y_train)
+    
+    # Make predictions
+    y_pred = pipeline.predict(X_test)
+    
+    # Calculate metrics
+    mae = mean_absolute_error(y_test, y_pred)
+    mse = mean_squared_error(y_test, y_pred)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(y_test, y_pred)
+    
+    # Store results
+    results.append({
+        'Model': name,
+        'MAE': mae,
+        'MSE': mse,
+        'RMSE': rmse,
+        'R2': r2
+    })
+    
+    print(f"{name} evaluation completed.")
+
+# Display results
+results_df = pd.DataFrame(results)
+display(results_df.sort_values('R2', ascending=False))
+
+# Plot model performance
+plt.figure(figsize=(12, 6))
+sns.barplot(x='Model', y='R2', data=results_df)
+plt.title('Model Comparison (R-squared)')
+plt.xticks(rotation=45)
+plt.show()
+
+4. Model Tuning & Optimization 
+# Tune the best performing model (assuming it's XGBoost)
+best_model = XGBRegressor(random_state=42)
+
+# Define parameter grid
+param_grid = {
+    'model__n_estimators': [100, 200, 300],
+    'model__max_depth': [3, 5, 7],
+    'model__learning_rate': [0.01, 0.1, 0.2],
+    'model__subsample': [0.8, 0.9, 1.0],
+    'model__colsample_bytree': [0.8, 0.9, 1.0]
+}
+
+# Create pipeline for grid search
+pipeline = Pipeline(steps=[
+    ('preprocessor', preprocessor),
+    ('model', best_model)
+])
+
+# Randomized search CV
+random_search = RandomizedSearchCV(
+    pipeline,
+    param_distributions=param_grid,
+    n_iter=20,
+    cv=5,
+    scoring='neg_mean_squared_error',
+    random_state=42,
+    n_jobs=-1
+)
+
+# Fit the model
+random_search.fit(X_train, y_train)
+
+# Best parameters
+print("Best parameters found:")
+print(random_search.best_params_)
+
+# Evaluate best model
+best_pipeline = random_search.best_estimator_
+y_pred = best_pipeline.predict(X_test)
+
+# Calculate metrics
+mae = mean_absolute_error(y_test, y_pred)
+mse = mean_squared_error(y_test, y_pred)
+rmse = np.sqrt(mse)
+r2 = r2_score(y_test, y_pred)
+
+print("\nOptimized model performance:")
+print(f"MAE: {mae:.2f}")
+print(f"MSE: {mse:.2f}")
+print(f"RMSE: {rmse:.2f}")
+print(f"R2: {r2:.4f}")
+
+5. Interpretation and Insights
+ # Feature importance analysis
+# Get feature names from preprocessing
+cat_encoder = preprocessor.named_transformers_['cat']
+cat_feature_names = cat_encoder.get_feature_names_out(cat_features)
+all_feature_names = np.concatenate([num_features, cat_feature_names])
+
+# Get feature importances from the best model
+if hasattr(best_pipeline.named_steps['model'], 'feature_importances_'):
+    importances = best_pipeline.named_steps['model'].feature_importances_
+    feature_importance = pd.DataFrame({'Feature': all_feature_names, 'Importance': importances})
+    feature_importance = feature_importance.sort_values('Importance', ascending=False)
+    
+    # Plot feature importance
+    plt.figure(figsize=(12, 8))
+    sns.barplot(x='Importance', y='Feature', data=feature_importance.head(15))
+    plt.title('Top 15 Feature Importances')
+    plt.show()
+
+# SHAP values for model interpretation
+# Note: This can be computationally expensive for large datasets
+try:
+    # Process the data for SHAP
+    processed_data = preprocessor.transform(X_train)
+    
+    # Create explainer
+    explainer = shap.TreeExplainer(best_pipeline.named_steps['model'])
+    shap_values = explainer.shap_values(processed_data)
+    
+    # Summary plot
+    plt.figure()
+    shap.summary_plot(shap_values, processed_data, feature_names=all_feature_names, plot_type="bar")
+    plt.show()
+    
+    # Force plot for a single prediction
+    sample_idx = 0
+    shap.force_plot(explainer.expected_value, shap_values[sample_idx,:], 
+                   processed_data[sample_idx,:], feature_names=all_feature_names)
+    plt.show()
+except Exception as e:
+    print(f"SHAP visualization failed: {e}")
+
+# Generate actionable insights
+print("\nKey Insights and Recommendations:")
+print("1. Top drivers of insurance premiums:")
+for feature in feature_importance['Feature'].head(5):
+    print(f"   - {feature}")
+    
+print("\n2. Smokers typically have higher premiums (as seen in EDA). Consider targeted smoking cessation programs.")
+print("3. BMI is a significant factor. Wellness programs could help reduce premiums for overweight policyholders.")
+print("4. Age is a key determinant. Consider more granular age bands for pricing.")
+print("5. Policy duration shows a relationship with premiums. Consider loyalty discounts for long-term customers.")
+
+
+8. Final Model Deployment Preparation 
+
+# Save the best model for deployment
+import joblib
+
+# Save the pipeline
+joblib.dump(best_pipeline, 'insurance_premium_predictor.pkl')
+
+# Save the preprocessor separately if needed
+joblib.dump(preprocessor, 'preprocessor.pkl')
+
+print("Model and preprocessor saved successfully!")
+
+# Example of loading and using the model
+loaded_model = joblib.load('insurance_premium_predictor.pkl')
+
+# Create sample data for prediction
+sample_data = {
+    'age': [35],
+    'gender': ['Male'],
+    'bmi': [28.5],
+    'children': [2],
+    'smoker': ['No'],
+    'region': ['Southeast'],
+    'policy_start_date': ['2018-06-15'],
+    'bmi_category': ['Overweight'],
+    'age_group': ['Adult']
+}
+sample_df = pd.DataFrame(sample_data)
+
+# Make prediction
+predicted_premium = loaded_model.predict(sample_df)
+print(f"\nPredicted premium amount: ${predicted_premium[0]:.2f}") 
+
+# Demographical /features
+## Age groups
+df['age_group'] = pd.cut(df['age'],
+                        bins=[0, 30, 45, 60, 100],
+                        labels=['Young', 'Adult', 'Middle-aged', 'Senior'])
+
+# Family size (children + 1 for policy holder)
+df['family_size'] = df['children'] + 1
